@@ -310,6 +310,7 @@ export function runShow(idOrPrefix: string, opts: ShowCliOptions, log: Logger = 
           ts: m.ts,
           text: m.text,
           tools: parseJsonStringArray(m.tools),
+          toolText: m.tool_text || undefined,
           model: m.model ?? undefined,
           isSidechain: Boolean(m.is_sidechain),
         })),
@@ -324,6 +325,9 @@ export function runShow(idOrPrefix: string, opts: ShowCliOptions, log: Logger = 
     const toolSummary = tools.map((t) => `[tool: ${t}]`).join(" ");
     const sidechain = m.is_sidechain ? " (sidechain)" : "";
     log(`[${m.ts}] ${m.role}${sidechain}: ${m.text}${toolSummary ? " " + toolSummary : ""}`);
+    if (m.tool_text) {
+      for (const line of m.tool_text.split("\n")) log(`    ${line}`);
+    }
   }
 }
 

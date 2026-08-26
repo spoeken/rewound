@@ -611,6 +611,7 @@ export function getMessagesForSession(
     tools: string;
     model: string | null;
     is_sidechain: number;
+    tool_text: string;
   }>;
 }
 

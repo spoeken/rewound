@@ -173,6 +173,7 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
       ts: r.ts,
       text: r.text,
       tools: parseJsonStringArray(r.tools),
+      toolText: r.tool_text || undefined,
       model: r.model ?? undefined,
       isSidechain: Boolean(r.is_sidechain),
     }));

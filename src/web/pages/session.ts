@@ -21,6 +21,7 @@ export interface SessionPageMessage {
   ts: string;
   text: string;
   tools: string[];
+  toolText?: string;
   model?: string;
   isSidechain: boolean;
 }
@@ -38,7 +39,10 @@ function renderMessage(m: SessionPageMessage): string {
   }
 
   const toolChips = m.tools.map((t) => `<span class="badge tool-chip">${escapeHtml(t)}</span>`).join(" ");
-  return `<article class="${cardClass}">${meta}<details><summary>🔧 ${m.tools.length} tool call${m.tools.length === 1 ? "" : "s"}: ${toolChips}</summary><pre>${text}</pre></details></article>`;
+  const toolTextBlock = m.toolText
+    ? `<div class="muted">tool call detail</div><pre>${escapeHtml(m.toolText)}</pre>`
+    : "";
+  return `<article class="${cardClass}">${meta}<details><summary>🔧 ${m.tools.length} tool call${m.tools.length === 1 ? "" : "s"}: ${toolChips}</summary><pre>${text}</pre>${toolTextBlock}</details></article>`;
 }
 
 export interface SessionPagePagination {
