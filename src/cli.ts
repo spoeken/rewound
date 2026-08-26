@@ -324,6 +324,11 @@ export function runShow(idOrPrefix: string, opts: ShowCliOptions, log: Logger = 
   log(`# ${session.title ?? session.id}  (${session.projectDir}, ${session.gitBranch ?? "?"})`);
   for (const m of messages) {
     const tools = parseJsonStringArray(m.tools);
+    // Genuinely contentless turn (e.g. an extended-thinking block with no
+    // plaintext returned) — kept in storage (its usage feeds the session's
+    // cost estimate), just skipped here for readability. --json still
+    // returns every row untouched.
+    if (!m.text.trim() && tools.length === 0 && !m.tool_text) continue;
     const toolSummary = tools.map((t) => `[tool: ${t}]`).join(" ");
     const sidechain = m.is_sidechain ? " (sidechain)" : "";
     log(`[${m.ts}] ${m.role}${sidechain}: ${m.text}${toolSummary ? " " + toolSummary : ""}`);

@@ -30,6 +30,14 @@ export interface SessionPageMessage {
 }
 
 function renderMessage(m: SessionPageMessage): string {
+  // A genuinely contentless turn (confirmed real: e.g. a Claude Code
+  // extended-thinking block with empty thinking text but real billed
+  // usage — signature present, no plaintext returned). Kept in storage
+  // deliberately (its token usage feeds the session's cost estimate,
+  // unlike Cursor's messages which never carry usage at all) — this is a
+  // display-only skip, not a data gap.
+  if (!m.text.trim() && m.tools.length === 0 && !m.toolText) return "";
+
   const sidechainBadge = m.isSidechain ? `<span class="badge accent">subagent</span>` : "";
   const modelBadge = m.model ? `<span class="badge">${escapeHtml(m.model)}</span>` : "";
   const meta = `<div class="muted">${escapeHtml(m.ts)} · <span class="role-label">${escapeHtml(m.role)}</span> ${modelBadge} ${sidechainBadge}</div>`;
