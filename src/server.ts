@@ -199,6 +199,9 @@ export function buildServer(opts: BuildServerOptions): FastifyInstance {
         startedAt: s.startedAt,
         estCostUsd: s.estCostUsd,
         messageCount: s.messageCount,
+        parentSessionId: s.parentSessionId,
+        agentType: s.agentType,
+        agentDescription: s.agentDescription,
       })),
     });
 

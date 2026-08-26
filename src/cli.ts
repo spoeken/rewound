@@ -278,8 +278,10 @@ export function runSessions(opts: SessionsCliOptions, log: Logger = defaultLog):
     return;
   }
   for (const r of rows) {
+    const heading = r.title ?? r.agentDescription ?? r.id;
+    const subagentTag = r.parentSessionId ? `  [subagent${r.agentType ? `:${r.agentType}` : ""} of ${r.parentSessionId}]` : "";
     log(
-      `${r.startedAt ?? "?"}  ${r.projectDir}  ${r.title ?? r.id}  msgs=${r.messageCount}  estApiCost=$${r.estCostUsd.toFixed(4)}`
+      `${r.startedAt ?? "?"}  ${r.projectDir}  ${heading}${subagentTag}  msgs=${r.messageCount}  estApiCost=$${r.estCostUsd.toFixed(4)}`
     );
   }
 }

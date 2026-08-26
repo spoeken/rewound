@@ -13,6 +13,9 @@ export interface SessionPageSession {
   models: string[];
   estCostUsd: number;
   archived: boolean;
+  parentSessionId?: string;
+  agentType?: string;
+  agentDescription?: string;
 }
 
 export interface SessionPageMessage {
@@ -71,21 +74,31 @@ export function renderSessionPage(
   messages: SessionPageMessage[],
   pagination?: SessionPagePagination
 ): string {
-  const heading = escapeHtml(session.title ?? session.id);
+  // Subagent sessions never get a title (no ai-title record) — the task
+  // description from the sibling .meta.json is a far better heading than
+  // the raw "agent-<id>" fallback.
+  const heading = escapeHtml(session.title ?? session.agentDescription ?? session.id);
   const archivedBadge = session.archived
     ? `<span class="badge accent">archived</span>`
+    : "";
+  const subagentBadge = session.parentSessionId
+    ? `<span class="badge accent">subagent${session.agentType ? `: ${escapeHtml(session.agentType)}` : ""}</span>`
+    : "";
+  const parentRow = session.parentSessionId
+    ? `<div class="muted">spawned by <a href="/session/${encodeURIComponent(session.parentSessionId)}">${escapeHtml(session.parentSessionId)}</a></div>`
     : "";
   const resumeCmd = resumeCommand(session.source, session.id, session.projectDir);
 
   const header = `
 <header class="session-header">
-  <h1>${heading} ${archivedBadge}</h1>
+  <h1>${heading} ${archivedBadge} ${subagentBadge}</h1>
   <div class="muted">
     ${escapeHtml(session.projectDir)} · branch ${escapeHtml(session.gitBranch ?? "?")} ·
     ${escapeHtml(session.startedAt ?? "?")} &ndash; ${escapeHtml(session.endedAt ?? "?")} ·
     ${session.messageCount} messages · <span title="Estimated cost at API list prices">est. API $${session.estCostUsd.toFixed(4)}</span> ·
     ${session.models.map(escapeHtml).join(", ") || "no model recorded"}
   </div>
+  ${parentRow}
   <p class="resume-row">
     <code id="resume-cmd">${escapeHtml(resumeCmd)}</code>
     <button type="button" class="copy-btn" data-copy-target="resume-cmd">Copy</button>
