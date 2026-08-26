@@ -437,9 +437,11 @@ export class CursorAdapter implements WatermarkSourceAdapter {
           }
           // A bubble that's neither a real error nor carries any of
           // text/tools/toolText (e.g. a bare step-marker with none of the
-          // known content fields) — skip rather than index a blank card.
+          // known content fields, or a whitespace-only `text` — confirmed
+          // real: Cursor logs bare "\n\n\n" formatting-gap turns between
+          // streamed tool calls) — skip rather than index a blank card.
           // Not an error: this is expected, not malformed data.
-          if (!msg.text && msg.tools.length === 0 && !msg.toolText) continue;
+          if (!msg.text.trim() && msg.tools.length === 0 && !msg.toolText) continue;
           messages.push(msg);
         }
         messages.sort((a, b) => a.ts.localeCompare(b.ts));
