@@ -17,6 +17,7 @@ import {
 import { ClaudeCodeAdapter } from "./adapters/claude-code.js";
 import { CodexAdapter } from "./adapters/codex.js";
 import { OpenCodeAdapter } from "./adapters/opencode.js";
+import { CursorAdapter } from "./adapters/cursor.js";
 import { indexAll, indexAllWatermark } from "./indexer.js";
 import { search, collapseSnippetWhitespace, resumeCommand, type SearchOptions } from "./search.js";
 import { mergeDb, syncDir, sanitizeHostName } from "./sync.js";
@@ -35,6 +36,16 @@ import { buildServer } from "./server.js";
 const DEFAULT_ROOTS = [path.join(os.homedir(), ".claude", "projects")];
 const DEFAULT_CODEX_ROOTS = [path.join(os.homedir(), ".codex", "sessions")];
 const DEFAULT_OPENCODE_ROOTS = [path.join(os.homedir(), ".local", "share", "opencode")];
+// macOS path verified against a real install; Linux/Windows per Cursor's
+// documented Electron userData convention, not yet verified against a real
+// install on those platforms.
+const DEFAULT_CURSOR_ROOTS = [
+  process.platform === "darwin"
+    ? path.join(os.homedir(), "Library", "Application Support", "Cursor", "User")
+    : process.platform === "win32"
+      ? path.join(process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"), "Cursor", "User")
+      : path.join(os.homedir(), ".config", "Cursor", "User"),
+];
 
 export function getVersion(): string {
   // ../package.json resolves correctly from both src/ (tests via tsx) and dist/.
@@ -65,6 +76,7 @@ export interface IndexCliOptions {
   roots?: string[];
   codexRoots?: string[];
   opencodeRoots?: string[];
+  cursorRoots?: string[];
   db?: string;
   json?: boolean;
 }
@@ -75,18 +87,20 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
   const codexRoots = opts.codexRoots && opts.codexRoots.length > 0 ? opts.codexRoots : DEFAULT_CODEX_ROOTS;
   const opencodeRoots =
     opts.opencodeRoots && opts.opencodeRoots.length > 0 ? opts.opencodeRoots : DEFAULT_OPENCODE_ROOTS;
+  const cursorRoots = opts.cursorRoots && opts.cursorRoots.length > 0 ? opts.cursorRoots : DEFAULT_CURSOR_ROOTS;
   const a = indexAll(db, new ClaudeCodeAdapter(), claudeRoots);
   const b = indexAll(db, new CodexAdapter(), codexRoots);
   const c = indexAllWatermark(db, new OpenCodeAdapter(), opencodeRoots);
+  const d = indexAllWatermark(db, new CursorAdapter(), cursorRoots);
   db.close();
   const stats = {
-    filesScanned: a.filesScanned + b.filesScanned + c.filesScanned,
-    filesNew: a.filesNew + b.filesNew + c.filesNew,
-    filesUpdated: a.filesUpdated + b.filesUpdated + c.filesUpdated,
-    messagesIndexed: a.messagesIndexed + b.messagesIndexed + c.messagesIndexed,
-    parseErrors: a.parseErrors + b.parseErrors + c.parseErrors,
-    skippedFiles: [...a.skippedFiles, ...b.skippedFiles, ...c.skippedFiles],
-    elapsedMs: a.elapsedMs + b.elapsedMs + c.elapsedMs,
+    filesScanned: a.filesScanned + b.filesScanned + c.filesScanned + d.filesScanned,
+    filesNew: a.filesNew + b.filesNew + c.filesNew + d.filesNew,
+    filesUpdated: a.filesUpdated + b.filesUpdated + c.filesUpdated + d.filesUpdated,
+    messagesIndexed: a.messagesIndexed + b.messagesIndexed + c.messagesIndexed + d.messagesIndexed,
+    parseErrors: a.parseErrors + b.parseErrors + c.parseErrors + d.parseErrors,
+    skippedFiles: [...a.skippedFiles, ...b.skippedFiles, ...c.skippedFiles, ...d.skippedFiles],
+    elapsedMs: a.elapsedMs + b.elapsedMs + c.elapsedMs + d.elapsedMs,
   };
 
   if (opts.json) {
@@ -106,7 +120,8 @@ export function runIndex(opts: IndexCliOptions, log: Logger = defaultLog): void 
     for (const r of claudeRoots) log(`  ${r}  (Claude Code)`);
     for (const r of codexRoots) log(`  ${r}  (Codex CLI)`);
     for (const r of opencodeRoots) log(`  ${r}  (OpenCode)`);
-    log("transcripts elsewhere? point rewound at them with --roots / --codex-roots / --opencode-roots");
+    for (const r of cursorRoots) log(`  ${r}  (Cursor)`);
+    log("transcripts elsewhere? point rewound at them with --roots / --codex-roots / --opencode-roots / --cursor-roots");
   }
 }
 
@@ -143,7 +158,7 @@ export function runSearch(query: string, opts: SearchCliOptions, log: Logger = d
       const extra = hit.matchesInSession - 1;
       log(`  (+${extra} more ${extra === 1 ? "match" : "matches"} in this session)`);
     }
-    log(`  ↳ resume: ${resumeCommand(hit.source, hit.sessionId)}`);
+    log(`  ↳ resume: ${resumeCommand(hit.source, hit.sessionId, hit.projectDir)}`);
     log("");
   }
   if (newestTs) {
@@ -382,10 +397,11 @@ export function buildProgram(): Command {
 
   program
     .command("index")
-    .description("scan agent transcripts (Claude Code + Codex CLI + OpenCode) into the local search index")
+    .description("scan agent transcripts (Claude Code + Codex CLI + OpenCode + Cursor) into the local search index")
     .option("--roots <dirs...>", "Claude Code root directories to scan")
     .option("--codex-roots <dirs...>", "Codex CLI session roots (default: ~/.codex/sessions)")
     .option("--opencode-roots <dirs...>", "OpenCode session DB roots (default: ~/.local/share/opencode)")
+    .option("--cursor-roots <dirs...>", "Cursor \"User\" data roots (default: platform Cursor app-support dir)")
     .option("--db <path>", "database path")
     .option("--json", "output JSON")
     .action((opts) => runIndex(opts));

@@ -68,7 +68,7 @@ export function renderSessionPage(
   const archivedBadge = session.archived
     ? `<span class="badge accent">archived</span>`
     : "";
-  const resumeCmd = resumeCommand(session.source, session.id);
+  const resumeCmd = resumeCommand(session.source, session.id, session.projectDir);
 
   const header = `
 <header class="session-header">
