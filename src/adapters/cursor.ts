@@ -63,6 +63,15 @@ interface BubbleValue {
   type?: number;
   text?: string;
   createdAt?: number;
+  // Model reasoning, when present — a *different* field than the public-docs-
+  // cited `allThinkingBlocks` (which was empty on every bubble in the
+  // original reference sample; this nested `thinking.text` shape is what
+  // real reasoning-model bubbles on this install actually use).
+  thinking?: { text?: string };
+  // A pure UI notification bubble (e.g. "Switched to Composer 2 after
+  // reaching API limit") — not something the user or model said, but
+  // informative enough to keep rather than silently drop.
+  serviceStatusUpdate?: { message?: string };
   toolFormerData?: {
     name?: string;
     rawArgs?: string;
@@ -84,6 +93,19 @@ const CONTENT_HASH_REF_RE = /^composer\.content\.[0-9a-f]+$/;
 // doesn't dominate a message's indexed text.
 const TOOL_TEXT_DEPTH_LIMIT = 8;
 const TOOL_TEXT_CHAR_BUDGET = 6000;
+
+// Bounds how many composers a single parseSince() call will touch. A full
+// historical backfill (reprocessing all ~850 composers on the reference
+// install after a watermark reset) reliably crashed with a native
+// GC-timing bug in better-sqlite3 under Node 24 — reproduced 4/4 times,
+// including with a 4x larger V8 heap, so it isn't simple memory pressure;
+// most likely cumulative Statement/GC churn within one process's lifetime.
+// Capping work per call means a large backlog drains safely across several
+// `rw index` invocations (each a fresh process, fresh V8 heap) instead of
+// needing to complete in one process's lifetime. Normal incremental runs
+// (a handful of changed sessions) are far below this and are unaffected —
+// this only changes behavior for a large first-time or reset backfill.
+const MAX_COMPOSERS_PER_CALL = 50;
 
 function collectStrings(value: unknown, depth: number, budget: { remaining: number }, out: string[]): void {
   if (budget.remaining <= 0 || depth > TOOL_TEXT_DEPTH_LIMIT) return;
@@ -145,7 +167,16 @@ function parseBubble(raw: string, bubbleId: string, composerCreatedAt: number | 
 
   const toolFormerData = d.toolFormerData;
   const tools = toolFormerData?.name ? [toolFormerData.name] : [];
-  const toolText = extractToolText(toolFormerData?.rawArgs, toolFormerData?.result);
+  // Reasoning and service-status notes are low-weight/non-prose, same as the
+  // OpenCode adapter's "model monologue, user never typed it" precedent —
+  // folded into toolText rather than the high-weight `text` field, alongside
+  // any tool call's own args/result text.
+  const extras: string[] = [];
+  if (d.thinking?.text) extras.push(d.thinking.text);
+  if (d.serviceStatusUpdate?.message) extras.push(d.serviceStatusUpdate.message);
+  const toolCallText = extractToolText(toolFormerData?.rawArgs, toolFormerData?.result);
+  if (toolCallText) extras.push(toolCallText);
+  const toolText = extras.length > 0 ? extras.join("\n\n") : undefined;
 
   return {
     uuid: bubbleId,
@@ -300,8 +331,8 @@ export class CursorAdapter implements WatermarkSourceAdapter {
 
       const headerRows = hasHeaders
         ? (db
-            .prepare("SELECT composerId, recency, value FROM composerHeaders WHERE recency >= ?")
-            .all(watermark) as ComposerHeaderRow[])
+            .prepare("SELECT composerId, recency, value FROM composerHeaders WHERE recency >= ? ORDER BY recency ASC LIMIT ?")
+            .all(watermark, MAX_COMPOSERS_PER_CALL) as ComposerHeaderRow[])
         : [];
 
       let nextWatermark = watermark;
@@ -316,11 +347,16 @@ export class CursorAdapter implements WatermarkSourceAdapter {
         ? new Set((db.prepare("SELECT composerId FROM composerHeaders").all() as { composerId: string }[]).map((r) => r.composerId))
         : new Set<string>();
 
-      const allComposerKeys = db.prepare("SELECT key FROM cursorDiskKV WHERE key LIKE 'composerData:%'").all() as {
-        key: string;
-      }[];
+      // Whatever's left of this call's budget after the headered batch above —
+      // keeps total touched composers per call bounded regardless of how the
+      // two channels split.
+      const legacyBudget = Math.max(0, MAX_COMPOSERS_PER_CALL - touchedHeaderedIds.size);
+      const allComposerKeys = db
+        .prepare("SELECT key FROM cursorDiskKV WHERE key LIKE 'composerData:%' ORDER BY key ASC")
+        .all() as { key: string }[];
       const newLegacyIds: string[] = [];
       for (const { key } of allComposerKeys) {
+        if (newLegacyIds.length >= legacyBudget) break;
         const id = key.slice("composerData:".length);
         if (headeredIds.has(id)) continue; // covered by the headered path above
         if (prevLegacySeen.has(id)) continue; // already indexed once, treated as static
@@ -387,9 +423,14 @@ export class CursorAdapter implements WatermarkSourceAdapter {
           if (!bubbleRow) continue; // pruned/expired bubble — not an error
           const msg = parseBubble(bubbleRow.value, h.bubbleId, composer.createdAt);
           if (!msg) {
-            parseErrors++;
+            parseErrors++; // malformed JSON or an unrecognized type — a real error
             continue;
           }
+          // A bubble that's neither a real error nor carries any of
+          // text/tools/toolText (e.g. a bare step-marker with none of the
+          // known content fields) — skip rather than index a blank card.
+          // Not an error: this is expected, not malformed data.
+          if (!msg.text && msg.tools.length === 0 && !msg.toolText) continue;
           messages.push(msg);
         }
         messages.sort((a, b) => a.ts.localeCompare(b.ts));

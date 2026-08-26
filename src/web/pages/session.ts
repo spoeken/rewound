@@ -34,14 +34,17 @@ function renderMessage(m: SessionPageMessage): string {
   const roleClass = m.role === "assistant" ? "message-assistant" : "message-user";
   const cardClass = `card message ${roleClass}`;
 
+  const toolTextBlock = m.toolText ? `<div class="muted">detail</div><pre>${escapeHtml(m.toolText)}</pre>` : "";
+
+  // No tool call, but there's still reasoning/status content in toolText
+  // (e.g. Cursor's thinking blocks or a service-status note) — show it
+  // plainly, no <details> collapse, since there are no tool chips to serve
+  // as the "click to expand" affordance.
   if (m.tools.length === 0) {
-    return `<article class="${cardClass}">${meta}<pre>${text}</pre></article>`;
+    return `<article class="${cardClass}">${meta}<pre>${text}</pre>${toolTextBlock}</article>`;
   }
 
   const toolChips = m.tools.map((t) => `<span class="badge tool-chip">${escapeHtml(t)}</span>`).join(" ");
-  const toolTextBlock = m.toolText
-    ? `<div class="muted">tool call detail</div><pre>${escapeHtml(m.toolText)}</pre>`
-    : "";
   return `<article class="${cardClass}">${meta}<details><summary>🔧 ${m.tools.length} tool call${m.tools.length === 1 ? "" : "s"}: ${toolChips}</summary><pre>${text}</pre>${toolTextBlock}</details></article>`;
 }
 
