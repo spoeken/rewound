@@ -36,11 +36,17 @@ import type { NormalizedMessage, NormalizedSession, WatermarkCursorValue, Waterm
 // field is a human-readable tool name (used as-is for NormalizedMessage.tools,
 // same as every other adapter — no cross-tool name normalization, even
 // though Cursor itself has at least two different MCP tool-name spellings
-// across versions). `result`'s shape varies by tool; some (edit_file_v2 and
-// friends) don't inline the diff at all, just a content-hash reference into
-// a separate composer.content.<hash> blob cache — deliberately not resolved
-// here (see extractToolText below), same "defer the expensive low-value
-// join" call the OpenCode adapter already made for sub-sessions.
+// across versions). `result`'s shape varies by tool; edit-type tools
+// (edit_file_v2 and friends) don't inline their diff there at all, just a
+// content-hash reference into a separate composer.content.<hash> blob
+// cache. That join is still deliberately NOT resolved (same "defer the
+// expensive low-value lookup" call the OpenCode adapter made for
+// sub-sessions) — but confirmed unnecessary for edit_file_v2 specifically:
+// its real diff (`streamingContent`) is already inline in `params`, which
+// `rawArgs` (the field every other tool's diff/content lives in) doesn't
+// even carry for this tool. search_replace/write/MultiEdit/apply_patch all
+// keep their content in `rawArgs` as before; `params` is included as a
+// third source alongside it for exactly this edit_file_v2 case.
 
 interface ComposerHeaderRow {
   composerId: string;
@@ -75,6 +81,9 @@ interface BubbleValue {
   toolFormerData?: {
     name?: string;
     rawArgs?: string;
+    // edit_file_v2's real diff (streamingContent) lives only here — it has
+    // no rawArgs at all, unlike every other edit-type tool.
+    params?: string;
     result?: string;
   };
 }
@@ -132,10 +141,10 @@ function collectStrings(value: unknown, depth: number, budget: { remaining: numb
   }
 }
 
-function extractToolText(rawArgsJson: string | undefined, resultJson: string | undefined): string | undefined {
+function extractToolText(...jsons: (string | undefined)[]): string | undefined {
   const parts: string[] = [];
   const budget = { remaining: TOOL_TEXT_CHAR_BUDGET };
-  for (const raw of [rawArgsJson, resultJson]) {
+  for (const raw of jsons) {
     if (!raw) continue;
     let parsed: unknown;
     try {
@@ -174,7 +183,7 @@ function parseBubble(raw: string, bubbleId: string, composerCreatedAt: number | 
   const extras: string[] = [];
   if (d.thinking?.text) extras.push(d.thinking.text);
   if (d.serviceStatusUpdate?.message) extras.push(d.serviceStatusUpdate.message);
-  const toolCallText = extractToolText(toolFormerData?.rawArgs, toolFormerData?.result);
+  const toolCallText = extractToolText(toolFormerData?.rawArgs, toolFormerData?.params, toolFormerData?.result);
   if (toolCallText) extras.push(toolCallText);
   const toolText = extras.length > 0 ? extras.join("\n\n") : undefined;
 
