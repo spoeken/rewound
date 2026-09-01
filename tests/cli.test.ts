@@ -16,11 +16,13 @@ import {
   buildProgram,
   isMainModule,
   runServe,
+  runStop,
   resolveServePort,
   highlightSnippet,
   stripSnippetMarkers,
   parsePositiveInt,
 } from "../src/cli.js";
+import { pidFilePath, readServeRecord, writeServeRecord } from "../src/pidfile.js";
 
 let tmpDir: string;
 let projectDir: string;
@@ -415,6 +417,55 @@ describe("runServe", () => {
     expect(resolveServePort(1.5)).toBe(4321);
     expect(resolveServePort(8080)).toBe(8080);
     expect(resolveServePort(0)).toBe(0);
+  });
+});
+
+describe("runServe / runStop pid record", () => {
+  it("records pid, host and the actually-bound port while serving, and clears it on close", async () => {
+    const app = await runServe({ port: 0, host: "127.0.0.1", db: dbPath }, () => {});
+    const pidFile = pidFilePath(dbPath);
+    try {
+      const rec = readServeRecord(pidFile);
+      expect(rec).not.toBeNull();
+      expect(rec!.pid).toBe(process.pid);
+      expect(rec!.host).toBe("127.0.0.1");
+      // port 0 means "any free port" — the record must hold the real one so
+      // `rewound stop` can report where the server actually was.
+      expect(rec!.port).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+    expect(readServeRecord(pidFile)).toBeNull();
+  });
+
+  it("runStop reports no running server, with a hint, when there is no record", async () => {
+    const lines: string[] = [];
+    const code = await runStop({ db: dbPath }, (l) => lines.push(l));
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("no rewound serve running");
+    expect(lines.join("\n")).toContain("lsof");
+  });
+
+  it("runStop cleans up a record whose process is long gone", async () => {
+    const pidFile = pidFilePath(dbPath);
+    // pid 2^31-1 is above every platform's pid_max, so it cannot be live.
+    writeServeRecord(pidFile, {
+      pid: 2147483647,
+      port: 4321,
+      host: "127.0.0.1",
+      startedAt: "2026-09-01T10:00:00.000Z",
+    });
+    const lines: string[] = [];
+    const code = await runStop({ db: dbPath }, (l) => lines.push(l));
+    expect(code).toBe(0);
+    expect(lines.join("\n")).toContain("stale");
+    expect(readServeRecord(pidFile)).toBeNull();
+  });
+
+  it("runStop --json emits the machine-readable result", async () => {
+    const lines: string[] = [];
+    await runStop({ db: dbPath, json: true }, (l) => lines.push(l));
+    expect(JSON.parse(lines.join("\n"))).toEqual({ status: "not-running" });
   });
 });
 

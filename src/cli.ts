@@ -32,6 +32,7 @@ import {
 } from "./auto.js";
 import { startMcpServer } from "./mcp.js";
 import { buildServer } from "./server.js";
+import { pidFilePath, writeServeRecord, removeServeRecord, stopServer } from "./pidfile.js";
 
 const DEFAULT_ROOTS = [path.join(os.homedir(), ".claude", "projects")];
 const DEFAULT_CODEX_ROOTS = [path.join(os.homedir(), ".codex", "sessions")];
@@ -382,9 +383,12 @@ export function resolveServePort(port: number | undefined): number {
 }
 
 export async function runServe(opts: ServeCliOptions, log: Logger = defaultLog) {
-  const db = openDb(resolveDbPath(opts.db));
+  const dbPath = resolveDbPath(opts.db);
+  const db = openDb(dbPath);
   const app = buildServer({ db });
+  const pidFile = pidFilePath(dbPath);
   app.addHook("onClose", async () => {
+    removeServeRecord(pidFile);
     db.close();
   });
 
@@ -392,11 +396,48 @@ export async function runServe(opts: ServeCliOptions, log: Logger = defaultLog) 
   const host = opts.host ?? "127.0.0.1";
   const address = await app.listen({ port, host });
 
+  // Recorded only once listening succeeded, so a failed bind never leaves a
+  // record that `rewound stop` would report as a running server.
+  writeServeRecord(pidFile, {
+    pid: process.pid,
+    port: app.addresses()[0]?.port ?? port,
+    host,
+    startedAt: new Date().toISOString(),
+  });
+
   log(`rewound serve listening on ${address}`);
   if (host === "0.0.0.0") {
     log("bound to 0.0.0.0 (Tailscale/phone mode) — reachable from other devices on your network");
   }
   return app;
+}
+
+export interface StopCliOptions {
+  db?: string;
+  json?: boolean;
+}
+
+export async function runStop(opts: StopCliOptions, log: Logger = defaultLog): Promise<number> {
+  const dbPath = resolveDbPath(opts.db);
+  const result = await stopServer(pidFilePath(dbPath));
+
+  if (opts.json) {
+    log(JSON.stringify(result, null, 2));
+  } else if (result.status === "stopped") {
+    const how = result.forced ? " (forced with SIGKILL)" : "";
+    log(`stopped rewound serve on ${result.host}:${result.port} (pid ${result.pid})${how}`);
+  } else if (result.status === "stale") {
+    log(`no rewound serve running (cleaned up a stale record for pid ${result.pid})`);
+  } else if (result.status === "not-running") {
+    log("no rewound serve running");
+    // A server started before this release, or against a different --db, has no
+    // record here — point at the manual escape hatch rather than lying about it.
+    log("if one is still up, find it with: lsof -ti tcp:4321 | xargs kill");
+  } else {
+    log(`could not stop pid ${result.pid}: ${result.reason}`);
+  }
+
+  return result.status === "failed" ? 1 : 0;
 }
 
 export function buildProgram(): Command {
@@ -493,7 +534,26 @@ export function buildProgram(): Command {
     .option("--host <host>", "host to bind (use 0.0.0.0 for Tailscale/phone access)", "127.0.0.1")
     .option("--db <path>", "database path")
     .action(async (opts) => {
-      await runServe(opts);
+      const app = await runServe(opts);
+      // Ctrl-C / `rewound stop` must run fastify's onClose so the pid record is
+      // removed; without this the process dies with a stale serve.pid behind it.
+      let closing = false;
+      for (const sig of ["SIGINT", "SIGTERM"] as const) {
+        process.once(sig, () => {
+          if (closing) return;
+          closing = true;
+          void app.close().then(() => process.exit(0));
+        });
+      }
+    });
+
+  program
+    .command("stop")
+    .description("stop the local web UI server started by `rewound serve`")
+    .option("--db <path>", "database path")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      process.exitCode = await runStop(opts);
     });
 
   return program;

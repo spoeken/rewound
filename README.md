@@ -150,7 +150,10 @@ Every response is capped near 8KB so agent context isn't blown out by a single t
 ```
 rewound serve                  # http://127.0.0.1:4321
 rewound serve --host 0.0.0.0   # reachable over Tailscale — search your history from your phone
+rewound stop                   # stop a server started earlier (SIGTERM, then SIGKILL)
 ```
+
+`serve` records its pid next to the database (`~/.rewound/serve.pid`), so `rewound stop` finds it again even from another terminal; Ctrl-C clears the record too.
 
 Server-rendered with zero frontend build step, colorblind-safe palette (blue/orange, no red/green status pairs), and everything — including clipboard copy — works over plain HTTP on your tailnet.
 
