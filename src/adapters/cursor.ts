@@ -63,6 +63,12 @@ interface ComposerDataValue {
   name?: string;
   createdAt?: number;
   fullConversationHeadersOnly?: ConversationHeader[];
+  // Pre-`_v` composers store the whole conversation inline here — full
+  // bubble objects, not the ID references fullConversationHeadersOnly uses.
+  // 147 composers / 2,840 messages on the reference install, and 2,818 of
+  // those bubbles have NO bubbleId: KV row at all, so they can only be read
+  // from here. Without this the entire conversation indexes as empty.
+  conversation?: Array<BubbleValue & { bubbleId?: string }>;
 }
 
 interface BubbleValue {
@@ -225,6 +231,17 @@ function parseBubble(raw: string, bubbleId: string, composerCreatedAt: number | 
   } catch {
     return undefined;
   }
+  return parseBubbleValue(d, bubbleId, composerCreatedAt);
+}
+
+// Split out from parseBubble so the legacy `conversation` path can reuse
+// every extraction rule without a pointless re-serialize: those bubbles are
+// already objects inline in composerData, not JSON strings in their own KV row.
+function parseBubbleValue(
+  d: BubbleValue,
+  bubbleId: string,
+  composerCreatedAt: number | undefined
+): NormalizedMessage | undefined {
   const role = d.type === 1 ? "user" : d.type === 2 ? "assistant" : undefined;
   if (!role) return undefined;
 
@@ -486,8 +503,24 @@ export class CursorAdapter implements WatermarkSourceAdapter {
         if (!projectDir) continue;
 
         const headers = composer.fullConversationHeadersOnly ?? [];
+        // Pre-`_v` composers have no header list at all and keep their whole
+        // conversation inline instead. Their bubbles usually have no KV row
+        // (2,818 of 2,840 on the reference install), so the inline object IS
+        // the only copy — reading it is the difference between indexing the
+        // conversation and indexing nothing.
+        const legacyConversation = headers.length === 0 ? composer.conversation ?? [] : [];
         const messages: NormalizedMessage[] = [];
         let parseErrors = 0;
+
+        // A bubble that's neither a real error nor carries any of
+        // text/tools/toolText (e.g. a bare step-marker with none of the
+        // known content fields, or a whitespace-only `text` — confirmed
+        // real: Cursor logs bare "\n\n\n" formatting-gap turns between
+        // streamed tool calls) is skipped rather than indexed as a blank
+        // card. Not an error: this is expected, not malformed data.
+        const keep = (msg: NormalizedMessage | undefined): boolean =>
+          Boolean(msg && (msg.text.trim() || msg.tools.length > 0 || msg.toolText));
+
         for (const h of headers) {
           const bubbleRow = getBubble.get(`bubbleId:${composerId}:${h.bubbleId}`) as { value: string } | undefined;
           if (!bubbleRow) continue; // pruned/expired bubble — not an error
@@ -496,14 +529,23 @@ export class CursorAdapter implements WatermarkSourceAdapter {
             parseErrors++; // malformed JSON or an unrecognized type — a real error
             continue;
           }
-          // A bubble that's neither a real error nor carries any of
-          // text/tools/toolText (e.g. a bare step-marker with none of the
-          // known content fields, or a whitespace-only `text` — confirmed
-          // real: Cursor logs bare "\n\n\n" formatting-gap turns between
-          // streamed tool calls) — skip rather than index a blank card.
-          // Not an error: this is expected, not malformed data.
-          if (!msg.text.trim() && msg.tools.length === 0 && !msg.toolText) continue;
+          if (!keep(msg)) continue;
           messages.push(msg);
+        }
+
+        for (const [i, entry] of legacyConversation.entries()) {
+          if (!entry) continue;
+          // Inline bubbles carry their own bubbleId; fall back to a
+          // positional id so a malformed entry can't collide with a sibling.
+          const bubbleId = entry.bubbleId ?? `${composerId}-legacy-${i}`;
+          // Prefer a KV row when one does exist (22 of 2,840) — it's the
+          // same bubble, but kept in sync with any later edit.
+          const bubbleRow = getBubble.get(`bubbleId:${composerId}:${bubbleId}`) as { value: string } | undefined;
+          const msg = bubbleRow
+            ? parseBubble(bubbleRow.value, bubbleId, composer.createdAt)
+            : parseBubbleValue(entry, bubbleId, composer.createdAt);
+          if (!keep(msg)) continue;
+          messages.push(msg!);
         }
         messages.sort((a, b) => a.ts.localeCompare(b.ts));
 

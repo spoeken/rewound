@@ -479,6 +479,98 @@ describe("CursorAdapter.parseSince — message content extraction", () => {
   });
 });
 
+describe("CursorAdapter.parseSince — legacy pre-_v composers (inline `conversation`)", () => {
+  // 147 composers / 2,840 messages on the reference install store the whole
+  // conversation inline instead of using fullConversationHeadersOnly, and
+  // 2,818 of those bubbles have NO bubbleId: KV row — the inline object is
+  // the only copy. Without reading it the entire conversation indexes empty.
+  function insertLegacyComposer(
+    db: Database.Database,
+    c: { composerId: string; createdAt?: number; conversation: Array<Record<string, unknown>> }
+  ): void {
+    const value = JSON.stringify({
+      composerId: c.composerId,
+      createdAt: c.createdAt,
+      conversation: c.conversation, // note: no fullConversationHeadersOnly at all
+    });
+    db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(`composerData:${c.composerId}`, value);
+  }
+
+  it("reads bubbles inline from `conversation` when there is no KV row for them", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertLegacyComposer(db, {
+      composerId: "old1",
+      createdAt: 1000,
+      conversation: [
+        { bubbleId: "b1", type: 1, text: "Can we make this effect better?" },
+        { bubbleId: "b2", type: 2, text: "Here's an enhanced version:" },
+      ],
+    });
+    insertComposerHeader(db, { composerId: "old1", recency: 1000, fsPath: "/home/dev/3dworld" });
+    db.close();
+
+    const { sessions } = new CursorAdapter().parseSince(dbPath);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].messages.map((m) => m.uuid)).toEqual(["b1", "b2"]);
+    expect(sessions[0].messages[0].text).toBe("Can we make this effect better?");
+    expect(sessions[0].messages[1].role).toBe("assistant");
+  });
+
+  it("applies the same extraction rules to inline bubbles (codeBlocks, tool status)", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertLegacyComposer(db, {
+      composerId: "old1",
+      createdAt: 1000,
+      conversation: [
+        { bubbleId: "b1", type: 2, codeBlocks: [{ uri: { _fsPath: "/tmp/a.js" }, content: "const x = 1;" }] },
+        { bubbleId: "b2", type: 2, toolFormerData: { name: "grep", additionalData: { status: "error" } } },
+      ],
+    });
+    insertComposerHeader(db, { composerId: "old1", recency: 1000, fsPath: "/tmp" });
+    db.close();
+
+    const { sessions } = new CursorAdapter().parseSince(dbPath);
+    const [cb, tool] = sessions[0].messages;
+    expect(cb.toolText).toContain("const x = 1;");
+    expect(tool.tools).toEqual(["grep"]);
+    expect(tool.toolText).toContain("tool call status: error");
+  });
+
+  it("prefers the KV row over the inline copy when both exist", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertLegacyComposer(db, {
+      composerId: "old1",
+      createdAt: 1000,
+      conversation: [{ bubbleId: "b1", type: 2, text: "stale inline copy" }],
+    });
+    insertBubble(db, { composerId: "old1", bubbleId: "b1", type: 2, text: "fresher KV copy", createdAt: 1000 });
+    insertComposerHeader(db, { composerId: "old1", recency: 1000, fsPath: "/tmp" });
+    db.close();
+
+    const { sessions } = new CursorAdapter().parseSince(dbPath);
+    expect(sessions[0].messages[0].text).toBe("fresher KV copy");
+  });
+
+  it("ignores `conversation` when a modern header list is present (no double-indexing)", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    // A composer carrying BOTH shapes must not yield the same message twice.
+    const value = JSON.stringify({
+      composerId: "c1",
+      createdAt: 1000,
+      fullConversationHeadersOnly: [{ bubbleId: "b1", type: 1 }],
+      conversation: [{ bubbleId: "b1", type: 1, text: "inline copy" }],
+    });
+    db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run("composerData:c1", value);
+    insertBubble(db, { composerId: "c1", bubbleId: "b1", type: 1, text: "kv copy", createdAt: 1000 });
+    insertComposerHeader(db, { composerId: "c1", recency: 1000, fsPath: "/tmp" });
+    db.close();
+
+    const { sessions } = new CursorAdapter().parseSince(dbPath);
+    expect(sessions[0].messages).toHaveLength(1);
+    expect(sessions[0].messages[0].text).toBe("kv copy");
+  });
+});
+
 describe("CursorAdapter.parseSince — watermark on recency, not lastUpdatedAt", () => {
   it("still indexes a composer whose lastUpdatedAt is NULL (recency is never NULL)", () => {
     // The actual bug found and fixed: ~19% of composerHeaders rows on the
