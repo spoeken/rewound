@@ -86,6 +86,11 @@ interface BubbleValue {
     params?: string;
     result?: string;
   };
+  // Assistant-authored/referenced code shown inline, outside any tool call —
+  // confirmed real and substantial on the reference install (2,169 bubbles,
+  // some a full file's worth), not redundant with `text`. codeBlockIdx/_v
+  // are UI bookkeeping, not indexed.
+  codeBlocks?: Array<{ uri?: { _fsPath?: string; path?: string }; content?: string }>;
 }
 
 // edit-type tool results offload their actual before/after content to a
@@ -157,6 +162,25 @@ function extractToolText(...jsons: (string | undefined)[]): string | undefined {
   return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
+// Same char budget as extractToolText — a codeBlocks entry can be a whole
+// file, so this stays bounded for the same reason (one huge block
+// shouldn't dominate a message's indexed text).
+function extractCodeBlocksText(codeBlocks: BubbleValue["codeBlocks"]): string | undefined {
+  if (!codeBlocks || codeBlocks.length === 0) return undefined;
+  const parts: string[] = [];
+  let remaining = TOOL_TEXT_CHAR_BUDGET;
+  for (const cb of codeBlocks) {
+    if (remaining <= 0) break;
+    if (!cb?.content) continue;
+    const filePath = cb.uri?._fsPath ?? cb.uri?.path;
+    const block = filePath ? `${filePath}\n\n${cb.content}` : cb.content;
+    const take = block.slice(0, remaining);
+    parts.push(take);
+    remaining -= take.length;
+  }
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
 // 32% of bubbles on the reference install have no createdAt of their own
 // (confirmed by sampling — not rare). Falling back to 0 (1970-01-01) would
 // be actively misleading, so this falls back to the composer's own
@@ -185,6 +209,8 @@ function parseBubble(raw: string, bubbleId: string, composerCreatedAt: number | 
   if (d.serviceStatusUpdate?.message) extras.push(d.serviceStatusUpdate.message);
   const toolCallText = extractToolText(toolFormerData?.rawArgs, toolFormerData?.params, toolFormerData?.result);
   if (toolCallText) extras.push(toolCallText);
+  const codeBlocksText = extractCodeBlocksText(d.codeBlocks);
+  if (codeBlocksText) extras.push(codeBlocksText);
   const toolText = extras.length > 0 ? extras.join("\n\n") : undefined;
 
   return {
