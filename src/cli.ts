@@ -31,6 +31,7 @@ import {
   writeCrontab,
 } from "./auto.js";
 import { startMcpServer } from "./mcp.js";
+import { analyzeCursorDrift, formatDriftReport } from "./doctor.js";
 import { buildServer } from "./server.js";
 import { pidFilePath, writeServeRecord, removeServeRecord, stopServer } from "./pidfile.js";
 
@@ -339,6 +340,45 @@ export function runShow(idOrPrefix: string, opts: ShowCliOptions, log: Logger = 
   }
 }
 
+export interface DoctorCliOptions {
+  cursorRoots?: string[];
+  json?: boolean;
+  minTextLength?: number;
+}
+
+// Schema-drift check. Every content gap found in the Cursor adapter so far
+// (codeBlocks, thinking, serviceStatusUpdate, errorDetails, tool-call
+// status, pre-_v inline conversations) was found by hand-auditing the raw
+// store — nothing would have flagged them, and sessions just quietly got
+// thinner. This reports fields the adapter doesn't read that carry real
+// text, judged by content rather than a name list, so it keeps working as
+// Cursor adds fields we've never heard of.
+export function runDoctor(opts: DoctorCliOptions, log: Logger = defaultLog): void {
+  const cursorRoots = opts.cursorRoots && opts.cursorRoots.length > 0 ? opts.cursorRoots : DEFAULT_CURSOR_ROOTS;
+  const dbPaths = new CursorAdapter().discover(cursorRoots);
+
+  if (dbPaths.length === 0) {
+    if (opts.json) {
+      log(JSON.stringify({ reports: [] }));
+      return;
+    }
+    log("no Cursor data found. roots scanned:");
+    for (const r of cursorRoots) log(`  ${r}`);
+    log("point rewound at it with --cursor-roots");
+    return;
+  }
+
+  const reports = dbPaths.map((p) => analyzeCursorDrift(p, { minTextLength: opts.minTextLength }));
+
+  if (opts.json) {
+    log(JSON.stringify({ reports }));
+    return;
+  }
+  for (const report of reports) {
+    for (const line of formatDriftReport(report)) log(line);
+  }
+}
+
 export interface StatsCliOptions {
   db?: string;
   json?: boolean;
@@ -520,6 +560,14 @@ export function buildProgram(): Command {
     .option("--db <path>", "database path")
     .option("--json", "output JSON")
     .action((opts) => runStats(opts));
+
+  program
+    .command("doctor")
+    .description("check source transcripts for content fields this version doesn't index yet (schema drift)")
+    .option("--cursor-roots <dirs...>", "Cursor \"User\" data roots (default: platform Cursor app-support dir)")
+    .option("--min-text-length <n>", "how long a string must be to count as text", parsePositiveInt)
+    .option("--json", "output JSON")
+    .action((opts) => runDoctor(opts));
 
   program
     .command("mcp")

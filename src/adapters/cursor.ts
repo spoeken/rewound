@@ -114,6 +114,52 @@ interface BubbleValue {
 // value matching this pattern carries no searchable text of its own.
 const CONTENT_HASH_REF_RE = /^composer\.content\.[0-9a-f]+$/;
 
+// Bubble fields this adapter reads — for content or for structure.
+// KEEP IN SYNC when adding extraction: the drift detector (src/doctor.ts)
+// treats any field listed in neither this set nor the ignore set below as
+// unrecognised, and reports it if it turns out to carry real text. That's
+// the whole point — every gap found on this branch (codeBlocks, thinking,
+// serviceStatusUpdate, errorDetails, tool status) was a field nobody knew
+// to look at, found only by hand-auditing. This makes the next one show up
+// on its own.
+export const CURSOR_READ_BUBBLE_FIELDS: ReadonlySet<string> = new Set([
+  "type",
+  "bubbleId",
+  "createdAt",
+  "text",
+  "thinking",
+  "serviceStatusUpdate",
+  "errorDetails",
+  "toolFormerData",
+  "codeBlocks",
+]);
+
+// Fields deliberately NOT indexed, each because it carries no searchable
+// prose: identifiers, enums, counters, timings, booleans, and UI/transport
+// bookkeeping. Deliberately kept tight — a field belongs here only once
+// someone has actually looked at it and decided, never merely to quiet the
+// detector. Anything genuinely uninspected should stay unknown and get
+// reported.
+export const CURSOR_IGNORED_BUBBLE_FIELDS: ReadonlySet<string> = new Set([
+  // identifiers
+  "_v", "serverBubbleId", "usageUuid", "requestId", "checkpointId", "afterCheckpointId",
+  "generationUUID", "subagentSpawnTaskToolCallId",
+  // enums / modes / flags
+  "unifiedMode", "unifiedModeSetExplicitly", "capabilityType", "capabilityTypes",
+  "thinkingStyle", "intermediateSectionType", "conversationState",
+  "isAgentic", "isNudge", "isPlanExecution", "isSimulatedMsg", "isReviewEditsFollowup",
+  "isRefunded", "isReadingLongFile", "skipRendering", "useWeb",
+  "editToolSupportsSearchAndReplace", "existedPreviousTerminalCommand",
+  "existedSubsequentTerminalCommand",
+  // counters / timings
+  "tokenCount", "tokenCountUpUntilHere", "tokenDetailsUpUntilHere",
+  "thinkingDurationMs", "turnDurationMs", "timingInfo",
+  // per-turn lifecycle bookkeeping (arrays of capability ids, mostly empty)
+  "capabilityStatuses", "capabilitiesRan",
+  // a Lexical-editor JSON mirror of `text` — redundant with what we index
+  "richText",
+]);
+
 // Tool call params/results have no fixed schema across ~70 distinct tool
 // names (confirmed on the reference corpus) and drift between Cursor
 // versions (edit_file -> edit_file_v2, read_file -> read_file_v2, ...), so

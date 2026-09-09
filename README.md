@@ -119,7 +119,16 @@ rewound search <query> [--project <substr>] [--since <ISO|7d|24h>] [--role user|
 rewound sessions [--project <substr>] [--limit N] [--json]
 rewound show <session-id-or-prefix> [--json]
 rewound stats [--json]
+rewound doctor [--cursor-roots <dir...>] [--min-text-length N] [--json]
 ```
+
+`doctor` is a schema-drift check. Agent tools change their transcript formats
+without notice, and when a new field appears rewound doesn't quietly warn you —
+sessions just get thinner. It scans the raw store for fields this version
+doesn't index that nonetheless carry real text, and reports them with counts
+and an example, flagging any that are a message's *only* content. It judges by
+content rather than a list of known field names, so it keeps working on fields
+nobody has heard of yet. Currently covers Cursor, whose format moves most.
 
 `search` supports relative time windows (`--since 7d`), project filtering, and role filtering. Query terms are quoted automatically so punctuation never throws an FTS syntax error; pass `--raw` if you want real FTS5 query syntax.
 
