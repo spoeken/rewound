@@ -64,7 +64,15 @@ interface BubbleFixture {
   createdAt?: number;
   thinking?: { text?: string };
   serviceStatusUpdate?: { message?: string };
-  toolFormerData?: { name?: string; rawArgs?: string; params?: string; result?: string };
+  errorDetails?: { message?: string; error?: string; stackTrace?: string };
+  toolFormerData?: {
+    name?: string;
+    status?: string;
+    additionalData?: { status?: string };
+    rawArgs?: string;
+    params?: string;
+    result?: string;
+  };
   codeBlocks?: Array<{ uri?: { _fsPath?: string }; content?: string }>;
 }
 
@@ -75,6 +83,7 @@ function insertBubble(db: Database.Database, b: BubbleFixture): void {
     createdAt: b.createdAt,
     thinking: b.thinking,
     serviceStatusUpdate: b.serviceStatusUpdate,
+    errorDetails: b.errorDetails,
     toolFormerData: b.toolFormerData,
     codeBlocks: b.codeBlocks,
   });
@@ -312,6 +321,96 @@ describe("CursorAdapter.parseSince — message content extraction", () => {
     const { sessions } = new CursorAdapter().parseSince(dbPath);
     expect(sessions[0].messages).toHaveLength(1);
     expect(sessions[0].messages[0].toolText).toContain("const x = 1;");
+  });
+
+  it("records a failed tool call's status, which is otherwise nowhere in the record", () => {
+    // 887 named tool calls failed on the reference install and currently read
+    // as indistinguishable from successful ones. additionalData.status wins
+    // over the top-level one: "completed" there means the request finished,
+    // not that the tool succeeded.
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerData(db, { composerId: "c1", createdAt: 1000, headers: [{ bubbleId: "b1", type: 2 }] });
+    insertBubble(db, {
+      composerId: "c1",
+      bubbleId: "b1",
+      type: 2,
+      createdAt: 1000,
+      toolFormerData: { name: "grep", status: "completed", additionalData: { status: "error" }, rawArgs: JSON.stringify({ pattern: "foo" }) },
+    });
+    insertComposerHeader(db, { composerId: "c1", recency: 1000, fsPath: "/tmp" });
+    db.close();
+
+    const { sessions } = new CursorAdapter().parseSince(dbPath);
+    const msg = sessions[0].messages[0];
+    expect(msg.tools).toEqual(["grep"]);
+    expect(msg.toolText).toContain("tool call status: error");
+  });
+
+  it("does not annotate a status for an ordinary successful tool call", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerData(db, { composerId: "c1", createdAt: 1000, headers: [{ bubbleId: "b1", type: 2 }] });
+    insertBubble(db, {
+      composerId: "c1",
+      bubbleId: "b1",
+      type: 2,
+      createdAt: 1000,
+      toolFormerData: { name: "grep", status: "completed", additionalData: { status: "success" }, rawArgs: JSON.stringify({ pattern: "foo" }) },
+    });
+    insertComposerHeader(db, { composerId: "c1", recency: 1000, fsPath: "/tmp" });
+    db.close();
+
+    const { sessions } = new CursorAdapter().parseSince(dbPath);
+    expect(sessions[0].messages[0].toolText).not.toContain("tool call status");
+  });
+
+  it("recovers a tool call that failed before its name was ever recorded", () => {
+    // 1,308 of these on the reference install: no name, no args, no result —
+    // status is literally all that survives, so without it the bubble looks
+    // empty and gets skipped entirely.
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerData(db, { composerId: "c1", createdAt: 1000, headers: [{ bubbleId: "b1", type: 2 }] });
+    insertBubble(db, {
+      composerId: "c1",
+      bubbleId: "b1",
+      type: 2,
+      createdAt: 1000,
+      toolFormerData: { additionalData: { status: "error" } },
+    });
+    insertComposerHeader(db, { composerId: "c1", recency: 1000, fsPath: "/tmp" });
+    db.close();
+
+    const { sessions } = new CursorAdapter().parseSince(dbPath);
+    expect(sessions[0].messages).toHaveLength(1);
+    expect(sessions[0].messages[0].tools).toEqual([]); // no real name to report
+    expect(sessions[0].messages[0].toolText).toContain("tool call status: error");
+  });
+
+  it("captures errorDetails message and detail text, but not the internal stack trace", () => {
+    const { dbPath, db } = makeGlobalDb(tmpDir);
+    insertComposerData(db, { composerId: "c1", createdAt: 1000, headers: [{ bubbleId: "b1", type: 2 }] });
+    insertBubble(db, {
+      composerId: "c1",
+      bubbleId: "b1",
+      type: 2,
+      createdAt: 1000,
+      errorDetails: {
+        message: "Error [unavailable]",
+        error: JSON.stringify({
+          error: "ERROR_OPENAI",
+          details: { title: "Unable to reach the model provider", detail: "This might be temporary." },
+        }),
+        stackTrace: "ConnectError: [unavailable] Error\n    at nTa.$endAiConnectTransportReportError (vscode-file://...)",
+      },
+    });
+    insertComposerHeader(db, { composerId: "c1", recency: 1000, fsPath: "/tmp" });
+    db.close();
+
+    const { sessions } = new CursorAdapter().parseSince(dbPath);
+    const msg = sessions[0].messages[0];
+    expect(msg.toolText).toContain("Error [unavailable]");
+    expect(msg.toolText).toContain("Unable to reach the model provider");
+    // Cursor's own internal JS stack is noise, never indexed.
+    expect(msg.toolText).not.toContain("vscode-file://");
   });
 
   it("skips a bubble with nothing in text/tools/toolText (not an error, expected)", () => {

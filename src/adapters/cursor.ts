@@ -78,8 +78,18 @@ interface BubbleValue {
   // reaching API limit") — not something the user or model said, but
   // informative enough to keep rather than silently drop.
   serviceStatusUpdate?: { message?: string };
+  // A turn that failed outright (model provider unreachable, etc). `message`
+  // is a short label, `error` a JSON string carrying the human-readable
+  // title/detail. stackTrace (Cursor's own internal JS stack) and
+  // extraButtons (UI button labels) are deliberately not indexed — noise.
+  errorDetails?: { message?: string; error?: string };
   toolFormerData?: {
     name?: string;
+    // Outcome of the call. Two places carry it and they disagree: a call can
+    // be top-level "completed" while additionalData says "error" (the
+    // request finished; the tool itself failed), so additionalData wins.
+    status?: string;
+    additionalData?: { status?: string };
     rawArgs?: string;
     // edit_file_v2's real diff (streamingContent) lives only here — it has
     // no rawArgs at all, unlike every other edit-type tool.
@@ -162,6 +172,26 @@ function extractToolText(...jsons: (string | undefined)[]): string | undefined {
   return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
+// A tool call's outcome, but only when it's worth recording. "completed"/
+// "success"/"submitted" is the overwhelming norm and says nothing; a
+// failure or cancellation is real information that exists NOWHERE else in
+// the record — on the reference install 887 *named* tool calls failed and
+// currently read as indistinguishable from successful ones, plus 1,308
+// that failed before Cursor even recorded which tool it was (no name, no
+// args, no result — status is literally all that survives, so without this
+// the whole bubble looks empty and gets skipped).
+//
+// additionalData.status wins over the top-level one: a call is routinely
+// top-level "completed" (the request finished) while additionalData says
+// "error" (the tool itself failed).
+const NORMAL_TOOL_STATUSES = new Set(["completed", "success", "submitted"]);
+
+function abnormalToolStatus(toolFormerData: BubbleValue["toolFormerData"]): string | undefined {
+  const status = toolFormerData?.additionalData?.status ?? toolFormerData?.status;
+  if (!status || NORMAL_TOOL_STATUSES.has(status)) return undefined;
+  return status;
+}
+
 // Same char budget as extractToolText — a codeBlocks entry can be a whole
 // file, so this stays bounded for the same reason (one huge block
 // shouldn't dominate a message's indexed text).
@@ -207,6 +237,11 @@ function parseBubble(raw: string, bubbleId: string, composerCreatedAt: number | 
   const extras: string[] = [];
   if (d.thinking?.text) extras.push(d.thinking.text);
   if (d.serviceStatusUpdate?.message) extras.push(d.serviceStatusUpdate.message);
+  const failureStatus = abnormalToolStatus(toolFormerData);
+  if (failureStatus) extras.push(`tool call status: ${failureStatus}`);
+  if (d.errorDetails?.message) extras.push(d.errorDetails.message);
+  const errorText = extractToolText(d.errorDetails?.error);
+  if (errorText) extras.push(errorText);
   const toolCallText = extractToolText(toolFormerData?.rawArgs, toolFormerData?.params, toolFormerData?.result);
   if (toolCallText) extras.push(toolCallText);
   const codeBlocksText = extractCodeBlocksText(d.codeBlocks);
